@@ -1,5 +1,7 @@
 #if DEBUG
 import AppKit
+import ImageIO
+import SwiftUI
 import WebKit
 
 /// Debug-build smoke test, run with BABEL_UI_SELFTEST=<output dir> (see README → Testing).
@@ -13,6 +15,59 @@ enum SelfTest {
 
     static func run(app: AppDelegate) {
         Task { await runAsync(app: app) }
+    }
+
+    /// BABEL_UI_PET_PREVIEW=<dir>: render the crab's acts to GIFs (dance/sing/eat/hungry), then quit.
+    static var petPreviewDir: URL? {
+        ProcessInfo.processInfo.environment["BABEL_UI_PET_PREVIEW"].map { URL(fileURLWithPath: $0) }
+    }
+
+    static func renderPetPreviews(to dir: URL) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let t0 = Date(timeIntervalSinceReferenceDate: 0)
+        let busy = GPUUsage(items: [.init(type: "A6000", count: 2, rate: GPUUsage.price(for: "A6000"))],
+                            costAtFetch: 1.23, fetchedAt: t0)
+        let idle = GPUUsage(items: [], costAtFetch: 0, fetchedAt: t0)
+        let acts: [(name: String, action: PetAction, gpu: GPUUsage, secs: Double)] = [
+            ("dance", .dance, busy, 3), ("sing", .sing, busy, 3), ("eat", .eat("🍣"), busy, 5.4),
+            ("lift", .lift, busy, 3.9), ("ball", .ball, busy, 3), ("run", .run, busy, 1.5),
+            ("love", .love, busy, 1.8), ("held", .held, busy, 1.2), ("land", .land, busy, 1.5),
+            ("hungry", .hungry, idle, 3.6), ("sleep", .sleep, idle, 3.3), ("walk", .walk, idle, 2),
+        ]
+        func scene(_ act: (name: String, action: PetAction, gpu: GPUUsage, secs: Double), _ τ: Double) -> some View {
+            PetScene(gpu: act.gpu, action: act.action, started: t0, facing: 1, now: t0.addingTimeInterval(τ))
+                .background(Color(white: 0.94))
+        }
+        for act in acts {
+            let fps = 20.0
+            let count = Int(act.secs * fps)
+            let url = dir.appendingPathComponent("crab-\(act.name).gif") as CFURL
+            guard let dest = CGImageDestinationCreateWithURL(url, "com.compuserve.gif" as CFString, count, nil) else { continue }
+            CGImageDestinationSetProperties(dest, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+            for i in 0..<count {
+                let r = ImageRenderer(content: scene(act, Double(i) / fps))
+                r.scale = 1.5
+                guard let img = r.cgImage else { continue }
+                CGImageDestinationAddImage(dest, img, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 1 / fps]] as CFDictionary)
+            }
+            CGImageDestinationFinalize(dest)
+        }
+        // Contact sheets: 5 moments per act, one row per act, 4 acts per sheet.
+        for (n, chunk) in stride(from: 0, to: acts.count, by: 4).map({ Array(acts[$0..<min($0 + 4, acts.count)]) }).enumerated() {
+            let sheet = VStack(spacing: 0) {
+                ForEach(chunk.indices, id: \.self) { row in
+                    HStack(spacing: 0) {
+                        ForEach(0..<5, id: \.self) { k in
+                            scene(chunk[row], chunk[row].secs * Double(k) / 5 + 0.05).border(Color.gray.opacity(0.3))
+                        }
+                    }
+                }
+            }
+            let r = ImageRenderer(content: sheet)
+            if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+                try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("sheet\(n + 1).png"))
+            }
+        }
     }
 
     private static func runAsync(app: AppDelegate) async {
@@ -91,6 +146,15 @@ enum SelfTest {
                                 "phase": String(describing: app.server.phase)] as [String: Any]
             }
 
+            if env["BABEL_UI_SELFTEST_CLAUDE"] == "1" {
+                let js = AppDelegate.claudeTabScript(job: nil, label: "login node")
+                r["claudeTab"] = (try? await app.web.webView.evaluateJavaScript(js)) as? String ?? "error"
+                try? await Task.sleep(for: .milliseconds(500))
+                r["claudeTerms"] = (try? await app.web.webView.evaluateJavaScript(
+                    "JSON.stringify(terms.map(t => ({ title: t.base, pending: t.pending, open: t.open })))")) as? String ?? "error"
+                r["claudeJobCommand"] = AppDelegate.claudeCommand(job: "12345")
+            }
+
             await app.queue.refresh(server: app.server)
             r["queueSummary"] = app.queue.summary ?? NSNull()
             r["queueDetail"] = app.queue.detail ?? NSNull()
@@ -104,6 +168,27 @@ enum SelfTest {
         if let view = app.window?.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("window.png"))
+        }
+
+        r["petVisible"] = app.pet.isVisible
+        r["petAction"] = String(describing: app.pet.brain.action)
+        let petMenu = app.petMenu()
+        r["petMenu"] = petMenu.items.map { $0.isSeparatorItem ? "---" : $0.title + ($0.isEnabled ? "" : " [disabled]") + ($0.state == .on ? " [on]" : "") }
+        if env["BABEL_UI_SELFTEST_ROAM"] == "1", let panel = NSApp.windows.first(where: { $0 is NSPanel && $0.isVisible }) {
+            let before = panel.frame.origin
+            app.pet.goForARun()
+            try? await Task.sleep(for: .seconds(1.5))
+            r["roam"] = ["from": NSStringFromPoint(before), "after1.5s": NSStringFromPoint(panel.frame.origin),
+                         "action": String(describing: app.pet.brain.action)]
+        }
+        r["gpu"] = app.queue.gpu.map { "\($0.summary) · \(dollars($0.perHour))/h · so far \(dollars($0.total(at: Date())))" } ?? NSNull()
+        r["visiblePanels"] = NSApp.windows.filter { $0 is NSPanel && $0.isVisible }.map { "\(type(of: $0)) \(NSStringFromRect($0.frame)) content=\(String(describing: $0.contentView.map { type(of: $0) }))" }
+        let panel = app.pet.window
+        if let view = panel.contentView,
+           let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("pet.png"))
+            r["petFrame"] = NSStringFromRect(panel.frame)
         }
 
         let menu = NSMenu()

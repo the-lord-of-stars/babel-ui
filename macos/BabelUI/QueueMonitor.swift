@@ -8,6 +8,17 @@ final class QueueMonitor {
     private(set) var summary: String?
     private(set) var detail: String?
     private(set) var updated: Date?
+    /// GPUs held by running jobs (nil while the server or the cluster isn't reachable).
+    private(set) var gpu: GPUUsage?
+    /// Running jobs (for "Ask Claude Code in job …").
+    private(set) var running: [RunningJob] = []
+
+    struct RunningJob {
+        let id: String
+        let name: String
+        let gres: String
+        let nodes: String   // node list
+    }
 
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var inFlight = false
@@ -20,7 +31,7 @@ final class QueueMonitor {
     }()
 
     /// Every `interval` seconds: re-check the server, then refresh the summary while it runs.
-    func start(server: ServerManager, interval: Duration = .seconds(60)) {
+    func start(server: ServerManager, interval: Duration = .seconds(30)) {
         loop?.cancel()
         loop = Task { [weak self] in
             while !Task.isCancelled {
@@ -41,6 +52,7 @@ final class QueueMonitor {
         guard server.phase == .running else {
             summary = nil
             detail = nil
+            gpu = nil
             return
         }
         guard !inFlight else { return }
@@ -52,6 +64,13 @@ final class QueueMonitor {
             let (data, _) = try await session.data(from: url)
             let reply = try JSONDecoder().decode(QueueReply.self, from: data)
             if let jobs = reply.jobs {
+                gpu = GPUUsage.from(jobs: jobs.map { ($0.state ?? "", $0.gres ?? "", $0.nodes ?? "1", $0.elapsed ?? "0") },
+                                    at: Date())
+                running = jobs.filter { $0.state == "RUNNING" }.compactMap { j in
+                    guard let id = j.id else { return nil }
+                    let g = GPUUsage.parseGres(j.gres ?? "").map { "\($0.1)× \($0.0)" } ?? "CPU"
+                    return RunningJob(id: id, name: j.name ?? "", gres: g, nodes: j.reason ?? "")
+                }
                 let states = jobs.map { $0.state ?? "" }
                 let running = states.filter { $0 == "RUNNING" }.count
                 let pending = states.filter { $0 == "PENDING" }.count
@@ -67,10 +86,12 @@ final class QueueMonitor {
                     .joined(separator: "\n")
             } else {
                 summary = "Jobs: cluster not connected"
+                gpu = nil
+                running = []
                 detail = reply.error
             }
         } catch {
-            summary = "Jobs: unavailable"
+            summary = "Jobs: unavailable"   // a hiccup: keep the last GPU numbers
             detail = error.localizedDescription
         }
         updated = Date()
@@ -81,6 +102,10 @@ final class QueueMonitor {
             let id: String?
             let name: String?
             let state: String?
+            let gres: String?
+            let nodes: String?
+            let elapsed: String?
+            let reason: String?   // for running jobs: the node list
         }
         let jobs: [Job]?
         let error: String?

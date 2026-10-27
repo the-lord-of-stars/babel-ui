@@ -12,10 +12,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private(set) var window: NSWindow?
+    private(set) lazy var pet = PetWindow(queue: queue, makeMenu: { [weak self] in self?.petMenu() ?? NSMenu() })
     private var sigterm: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         let launchedAtLogin = Self.launchedAsLoginItem()
+        #if DEBUG
+        if let dir = SelfTest.petPreviewDir {
+            SelfTest.renderPetPreviews(to: dir)
+            exit(0)
+        }
+        #endif
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
@@ -39,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task { await server.ensureRunning() }
         queue.start(server: server)
+        if PetWindow.wanted { pet.show() }
 
         #if DEBUG
         if SelfTest.isEnabled {
@@ -65,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showPanel() {
         if window == nil { window = makeWindow() }
+        if let w = window, w.styleMask.contains(.fullScreen) { w.toggleFullScreen(nil) }
         NSApp.setActivationPolicy(.regular)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
@@ -82,6 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.title = "Babel UI"
         w.isReleasedWhenClosed = false   // keep the web view (and its terminals) when closed
         w.tabbingMode = .disallowed
+        // Open in whatever Space you're in (even over a full-screen app) instead of jumping to the
+        // Space it was last on; never become a full-screen Space of its own (green button = zoom).
+        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         w.delegate = self
         w.center()
         w.setFrameAutosaveName("BabelUIPanel")
@@ -146,6 +158,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await server.restart(includingExternal: external)
             if server.phase == .running { web.load() }
         }
+    }
+
+    @objc func togglePet() {
+        pet.setWanted(!PetWindow.wanted)
+    }
+
+    /// What clicking the crab offers: games, Claude Code on Babel, and the usual.
+    func petMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let brain = pet.brain
+        if let gpu = queue.gpu, gpu.gpuCount > 0 {
+            menu.addItem(disabled: "🦀 Crunching on \(gpu.summary) · \(dollars(gpu.perHour))/h")
+        } else if queue.gpu == nil {
+            menu.addItem(disabled: "🦀 Can't see Babel right now…")
+        } else {
+            menu.addItem(disabled: "🦀 No GPUs running… so hungry")
+        }
+        menu.addItem(.separator())
+        menu.addItem(BlockMenuItem("🍣  Feed Me") { brain.perform(.eat(PetBrain.foods.randomElement()!), for: 5.4) })
+        menu.addItem(BlockMenuItem("⚽️  Play Ball") { brain.perform(.ball, for: 6.4) })
+        menu.addItem(BlockMenuItem("🏋️  Work Out") { brain.perform(.lift, for: 6.5) })
+        menu.addItem(BlockMenuItem("💃  Dance") { brain.perform(.dance, for: 6) })
+        menu.addItem(BlockMenuItem("🎤  Sing") { brain.perform(.sing, for: 6) })
+        menu.addItem(BlockMenuItem("🏃  Go for a Run") { [weak self] in self?.pet.goForARun() })
+        menu.addItem(BlockMenuItem("💤  Take a Nap") { brain.perform(.sleep, for: 12) })
+        menu.addItem(.separator())
+
+        menu.addItem(disabled: "Ask Claude Code on Babel")
+        let ready = server.phase == .running
+        let login = BlockMenuItem("🖥  On the login node") { [weak self] in self?.askClaude(job: nil, label: "login node") }
+        login.isEnabled = ready
+        menu.addItem(login)
+        for job in queue.running {
+            let node = job.nodes.isEmpty ? "" : " · \(job.nodes)"
+            let item = BlockMenuItem("⚡️  In job \(job.id) (\(job.name), \(job.gres)\(node))") { [weak self] in
+                self?.askClaude(job: job.id, label: "job \(job.id)")
+            }
+            item.isEnabled = ready
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+
+        let roam = BlockMenuItem("Roam Around the Screen") { brain.roam.toggle() }
+        roam.state = brain.roam ? .on : .off
+        menu.addItem(roam)
+        let onTop = BlockMenuItem("Keep Crab on Top of Other Windows") { [weak self] in self?.pet.setOnTop(!PetWindow.onTop) }
+        onTop.state = PetWindow.onTop ? .on : .off
+        menu.addItem(onTop)
+        menu.addItem(BlockMenuItem("Open Panel") { [weak self] in self?.showPanel() })
+        menu.addItem(BlockMenuItem("Hide Crab") { [weak self] in self?.pet.setWanted(false) })
+        return menu
+    }
+
+    /// Open a terminal tab in the panel running Claude Code on Babel — on the login node, or on a
+    /// running job's node (srun --overlap shares the job's allocation, like the panel's file tab).
+    func askClaude(job: String?, label: String) {
+        if let job, job.range(of: #"^\d+(_\d+)?$"#, options: .regularExpression) == nil { return }
+        showPanel()
+        let js = Self.claudeTabScript(job: job, label: label)
+        Task {
+            for _ in 0..<40 where web.webView.isLoading || web.webView.url == nil {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            let result = (try? await web.webView.evaluateJavaScript(js)) as? String
+            if result != "ok" {
+                let alert = NSAlert()
+                alert.messageText = "Couldn't open a Claude terminal"
+                alert.informativeText = result == "full"
+                    ? "Too many terminal tabs are open. Close one on the panel's terminal page and try again."
+                    : "The panel page isn't ready (or this babel-ui version has no terminal tabs)."
+                alert.runModal()
+            }
+        }
+    }
+
+    /// JS for the panel page: switch to the terminal page and open a tab whose first command
+    /// (sent once the Babel prompt shows up) starts Claude Code.
+    static func claudeTabScript(job: String?, label: String) -> String {
+        let title = jsString("Claude · " + label)
+        let run = jsString(claudeCommand(job: job))
+        return "(() => { if (typeof newTerm !== 'function' || typeof showTab !== 'function') return 'missing'; "
+            + "showTab('term'); return newTerm({ title: \(title), run: \(run) }) ? 'ok' : 'full'; })()"
+    }
+
+    /// Shell for the panel's terminal: start `claude`, or explain how to install it on Babel.
+    static func claudeCommand(job: String?) -> String {
+        let inner = #"export PATH="$HOME/.local/bin:$PATH"; if command -v claude >/dev/null 2>&1; then claude; else echo; echo "Claude Code is not installed on Babel yet. Install it once (into your home directory) with:"; echo; echo "    curl -fsSL https://claude.ai/install.sh | bash"; echo; echo "then type: claude"; fi"#
+        guard let job else { return inner }
+        return "srun --jobid=\(job) --overlap -N1 -n1 --pty bash -l -c '\(inner); exec bash -l'"
+    }
+
+    private static func jsString(_ s: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
+        return String(String(decoding: data, as: UTF8.self).dropFirst().dropLast())
     }
 
     // MARK: - Launch at login
@@ -228,6 +335,9 @@ extension AppDelegate: NSMenuDelegate {
             let item = menu.addItem(disabled: summary)
             item.toolTip = queue.detail
         }
+        if server.phase == .running, let gpu = queue.gpu, gpu.gpuCount > 0 {
+            menu.addItem(disabled: "GPUs: \(gpu.summary) · ≈\(dollars(gpu.perHour))/h")
+        }
         menu.addItem(.separator())
 
         menu.addItem(action: "Open Panel", #selector(showPanel), self, key: "o")
@@ -241,6 +351,9 @@ extension AppDelegate: NSMenuDelegate {
         restart.isEnabled = server.phase != .checking && server.phase != .starting
         menu.addItem(action: "Show Server Log", #selector(showLog), self)
         menu.addItem(.separator())
+
+        let crab = menu.addItem(action: "Show GPU Crab", #selector(togglePet), self)
+        crab.state = PetWindow.wanted ? .on : .off
 
         let login = menu.addItem(action: "Launch at Login", #selector(toggleLaunchAtLogin), self)
         switch SMAppService.mainApp.status {
@@ -256,7 +369,7 @@ extension AppDelegate: NSMenuDelegate {
     }
 }
 
-private extension NSMenu {
+extension NSMenu {
     @discardableResult
     func addItem(disabled title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -272,4 +385,19 @@ private extension NSMenu {
         addItem(item)
         return item
     }
+}
+
+/// A menu item that runs a closure (the closure's target rides along as representedObject).
+func BlockMenuItem(_ title: String, _ block: @escaping () -> Void) -> NSMenuItem {
+    let target = MenuBlock(block)
+    let item = NSMenuItem(title: title, action: #selector(MenuBlock.fire), keyEquivalent: "")
+    item.target = target
+    item.representedObject = target
+    return item
+}
+
+final class MenuBlock: NSObject {
+    private let block: () -> Void
+    init(_ block: @escaping () -> Void) { self.block = block }
+    @objc func fire() { block() }
 }

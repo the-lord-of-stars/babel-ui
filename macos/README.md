@@ -15,7 +15,7 @@ own window, so you don't need a browser tab. It is an optional extra: `server.py
   *Show in Finder*. Other sites open in the default browser. If you close the window, the page and
   its terminals keep running in the background. The Dock icon only shows while the window is open.
 - **Menu bar**:
-  - server status and a jobs line ("Jobs: 2 running · 1 pending", from `/api/queue` every 60 s)
+  - server status, a jobs line and a GPU line ("Jobs: 2 running · 1 pending", from `/api/queue` every 30 s)
   - Open Panel
   - Open in Browser
   - Restart Server…: asks first. If the server was started outside the app, it says so before
@@ -24,6 +24,39 @@ own window, so you don't need a browser tab. It is an optional extra: `server.py
   - Launch at Login (`SMAppService`)
   - Quit
 - If macOS starts the app at login, it stays in the menu bar without opening the window.
+
+## The GPU crab (optional)
+
+<img src="docs/crab-dance.gif" width="160"> <img src="docs/crab-eat.gif" width="160">
+<img src="docs/crab-love.gif" width="160"> <img src="docs/crab-hungry.gif" width="160">
+
+A small pixel-art crab, in the style of Claude's mascot, lives on your screen. It is an ordinary window
+that other windows can cover.
+
+- **While your running jobs hold GPUs**, it takes turns dancing, singing, eating, lifting weights and
+  juggling a ball, and sometimes runs across the screen.
+  - Every 2 s a green `+$…/s` pops out of its head: roughly what one second of those GPUs would cost
+    to rent in a cloud.
+  - A caption under it shows `$/h` and "so far", counted from each job's start.
+  - Babel itself doesn't bill anyone; this is for fun.
+- **With no GPUs**, it's hungry: mouth wide open, poking a claw into it, dreaming of food. It also
+  naps and wanders around.
+- **Drag it** to pick it up, and it panics. **Click it** to open a menu:
+  - feed it, play, work out, dance, sing, run or nap
+  - **Ask Claude Code on Babel**: opens a terminal tab in the panel that starts `claude`, either on
+    the login node or inside one of your running jobs (`srun --jobid … --overlap --pty`)
+  - roam around the screen, keep the crab on top of other windows, open the panel, hide the crab
+
+  If Claude Code isn't installed on the cluster, that terminal prints the one-line installer instead.
+- **Turning it off:** use "Show GPU Crab" in the menu-bar menu.
+- **Prices** are ballpark on-demand $/GPU-hour by type (`GPUUsage.swift`; unknown types count as $1/h).
+  To override one:
+
+  ```bash
+  defaults write local.babel-ui.mac gpuPrices -dict-add l40s 1.2
+  ```
+- **Previews:** a Debug build run with `BABEL_UI_PET_PREVIEW=<dir>` renders every act to GIFs and
+  contact sheets, then exits.
 
 ## Build
 
