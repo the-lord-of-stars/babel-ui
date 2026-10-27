@@ -159,7 +159,8 @@ final class PetWindow {
 }
 
 /// Clicks reach the crab even while another app is active.
-private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+/// (Not generic on purpose: a generic subclass of NSHostingView crashes the Swift 6.3 optimizer.)
+private final class FirstClickHostingView: NSHostingView<PetView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
