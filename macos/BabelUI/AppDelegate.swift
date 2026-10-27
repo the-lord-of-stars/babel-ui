@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import ServiceManagement
 import SwiftUI
 
@@ -9,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) lazy var server = ServerManager(config: config)
     private(set) lazy var web = WebController(config: config)
     let queue = QueueMonitor()
+    private var crabHotkey: Hotkey?
 
     private var statusItem: NSStatusItem!
     private(set) var window: NSWindow?
@@ -47,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await server.ensureRunning() }
         queue.start(server: server)
         if PetWindow.wanted { pet.show() }
+        // ⌃⌥C from anywhere: show / hide the crab.
+        crabHotkey = Hotkey(keyCode: kVK_ANSI_C, modifiers: controlKey | optionKey) { [weak self] in self?.togglePet() }
 
         #if DEBUG
         if SelfTest.isEnabled {
@@ -188,9 +192,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(disabled: "Ask Claude Code on Babel")
         let ready = server.phase == .running
-        let login = BlockMenuItem("🖥  On the login node") { [weak self] in self?.askClaude(job: nil, label: "login node") }
-        login.isEnabled = ready
-        menu.addItem(login)
+        if queue.running.isEmpty {
+            menu.addItem(disabled: "Not on the login node — start a job first")
+        }
         for job in queue.running {
             let node = job.nodes.isEmpty ? "" : " · \(job.nodes)"
             let item = BlockMenuItem("⚡️  In job \(job.id) (\(job.name), \(job.gres)\(node))") { [weak self] in
@@ -208,14 +212,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onTop.state = PetWindow.onTop ? .on : .off
         menu.addItem(onTop)
         menu.addItem(BlockMenuItem("Open Panel") { [weak self] in self?.showPanel() })
-        menu.addItem(BlockMenuItem("Hide Crab") { [weak self] in self?.pet.setWanted(false) })
+        menu.addItem(BlockMenuItem("Hide Crab  (⌃⌥C)") { [weak self] in self?.pet.setWanted(false) })
         return menu
     }
 
-    /// Open a terminal tab in the panel running Claude Code on Babel — on the login node, or on a
-    /// running job's node (srun --overlap shares the job's allocation, like the panel's file tab).
-    func askClaude(job: String?, label: String) {
-        if let job, job.range(of: #"^\d+(_\d+)?$"#, options: .regularExpression) == nil { return }
+    /// Open a terminal tab in the panel running Claude Code on a running job's node (srun --overlap
+    /// shares the job's allocation, like the panel's file tab). Never on the login node, which is
+    /// shared and not for running such tools.
+    func askClaude(job: String, label: String) {
+        if job.range(of: #"^\d+(_\d+)?$"#, options: .regularExpression) == nil { return }
         showPanel()
         let js = Self.claudeTabScript(job: job, label: label)
         Task {
@@ -236,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// JS for the panel page: switch to the terminal page and open a tab whose first command
     /// (sent once the Babel prompt shows up) starts Claude Code.
-    static func claudeTabScript(job: String?, label: String) -> String {
+    static func claudeTabScript(job: String, label: String) -> String {
         let title = jsString("Claude · " + label)
         let run = jsString(claudeCommand(job: job))
         return "(() => { if (typeof newTerm !== 'function' || typeof showTab !== 'function') return 'missing'; "
@@ -244,9 +249,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Shell for the panel's terminal: start `claude`, or explain how to install it on Babel.
-    static func claudeCommand(job: String?) -> String {
+    static func claudeCommand(job: String) -> String {
         let inner = #"export PATH="$HOME/.local/bin:$PATH"; if command -v claude >/dev/null 2>&1; then claude; else echo; echo "Claude Code is not installed on Babel yet. Install it once (into your home directory) with:"; echo; echo "    curl -fsSL https://claude.ai/install.sh | bash"; echo; echo "then type: claude"; fi"#
-        guard let job else { return inner }
         return "srun --jobid=\(job) --overlap -N1 -n1 --pty bash -l -c '\(inner); exec bash -l'"
     }
 
@@ -352,7 +356,7 @@ extension AppDelegate: NSMenuDelegate {
         menu.addItem(action: "Show Server Log", #selector(showLog), self)
         menu.addItem(.separator())
 
-        let crab = menu.addItem(action: "Show GPU Crab", #selector(togglePet), self)
+        let crab = menu.addItem(action: "Show GPU Crab  (⌃⌥C anywhere)", #selector(togglePet), self)
         crab.state = PetWindow.wanted ? .on : .off
 
         let login = menu.addItem(action: "Launch at Login", #selector(toggleLaunchAtLogin), self)

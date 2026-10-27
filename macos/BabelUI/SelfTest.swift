@@ -147,7 +147,7 @@ enum SelfTest {
             }
 
             if env["BABEL_UI_SELFTEST_CLAUDE"] == "1" {
-                let js = AppDelegate.claudeTabScript(job: nil, label: "login node")
+                let js = AppDelegate.claudeTabScript(job: "12345", label: "job 12345")
                 r["claudeTab"] = (try? await app.web.webView.evaluateJavaScript(js)) as? String ?? "error"
                 try? await Task.sleep(for: .milliseconds(500))
                 r["claudeTerms"] = (try? await app.web.webView.evaluateJavaScript(

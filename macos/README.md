@@ -43,12 +43,12 @@ that other windows can cover.
   naps and wanders around.
 - **Drag it** to pick it up, and it panics. **Click it** to open a menu:
   - feed it, play, work out, dance, sing, run or nap
-  - **Ask Claude Code on Babel**: opens a terminal tab in the panel that starts `claude`, either on
-    the login node or inside one of your running jobs (`srun --jobid … --overlap --pty`)
+  - **Ask Claude Code on Babel**: opens a terminal tab in the panel that starts `claude` inside one of
+    your running jobs (`srun --jobid … --overlap --pty`). There is deliberately no login-node option
   - roam around the screen, keep the crab on top of other windows, open the panel, hide the crab
 
   If Claude Code isn't installed on the cluster, that terminal prints the one-line installer instead.
-- **Turning it off:** use "Show GPU Crab" in the menu-bar menu.
+- **Show / hide:** press **⌃⌥C** from anywhere (works while other apps are active), or use "Show GPU Crab" in the menu-bar menu.
 - **Prices** are ballpark on-demand $/GPU-hour by type (`GPUUsage.swift`; unknown types count as $1/h).
   To override one:
 
