@@ -66,7 +66,9 @@ struct GPUUsage: Equatable {
         return days * 86_400 + secs
     }
 
-    /// ≈ on-demand cloud price per GPU-hour (USD, 2025–26 ballpark). Override one with e.g.
+    /// ≈ on-demand cloud price per GPU-hour (USD). Reference: RunPod Secure Cloud and Lambda list
+    /// prices, Oct 2026 — neocloud rates, not AWS/GCP/Azure (those run 2–4× higher for the big cards).
+    /// Types marked "rough" had no current listing. Override one with e.g.
     /// `defaults write local.babel-ui.mac gpuPrices -dict-add l40s 1.2` (key = type, lowercase).
     static func price(for type: String) -> Double {
         let t = type.lowercased()
@@ -75,15 +77,22 @@ struct GPUUsage: Equatable {
             if let s = custom as? String, let d = Double(s) { return d }
         }
         let table: [(String, Double)] = [
-            ("h200", 3.50), ("h100", 2.50), ("b200", 5.00),
-            ("a100_80", 1.60), ("a100-80", 1.60), ("a100", 1.40),
-            ("l40s", 1.00), ("l40", 0.90),
-            ("6000ada", 0.80), ("6000_ada", 0.80), ("ada6000", 0.80), ("6000-ada", 0.80),
-            ("a6000", 0.50), ("a5000", 0.30), ("a4500", 0.25), ("a4000", 0.20),
-            ("a40", 0.45), ("a10", 0.60), ("l4", 0.45),
-            ("v100", 0.50), ("p100", 0.30), ("t4", 0.35),
-            ("4090", 0.40), ("3090", 0.25), ("2080", 0.15), ("titan", 0.20),
-        ]
+            ("b200", 6.70),                                   // Lambda
+            ("h200", 3.60),                                   // rough
+            ("h100", 2.90),                                   // RunPod 2.89, Lambda 2.99
+            ("a100_80", 1.50), ("a100-80", 1.50), ("a100_40", 1.20), ("a100-40", 1.20),
+            ("a100", 1.40),                                   // RunPod 1.39, Lambda 1.99
+            ("l40s", 1.05),                                   // RunPod 1.09
+            ("l40", 0.82),                                    // RunPod
+            ("6000ada", 0.99), ("6000_ada", 0.99), ("ada6000", 0.99), ("6000-ada", 0.99),   // RunPod
+            ("a6000", 0.60),                                  // RunPod 0.59
+            ("a5000", 0.27), ("a4500", 0.25), ("a4000", 0.20),   // RunPod / rough
+            ("a40", 0.59),                                    // RunPod
+            ("a10", 0.86),                                    // Lambda
+            ("l4", 0.59),                                     // RunPod
+            ("v100", 0.50), ("p100", 0.30), ("t4", 0.35),     // rough
+            ("4090", 0.89), ("3090", 0.50), ("2080", 0.15), ("titan", 0.20),
+        ].sorted { $0.0.count > $1.0.count }                  // most specific name wins
         return table.first { t.contains($0.0) }?.1 ?? 1.00
     }
 }

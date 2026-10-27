@@ -49,7 +49,7 @@ that other windows can cover.
 
   If Claude Code isn't installed on the cluster, that terminal prints the one-line installer instead.
 - **Show / hide:** press **⌃⌥C** from anywhere (works while other apps are active), or use "Show GPU Crab" in the menu-bar menu.
-- **Prices** are ballpark on-demand $/GPU-hour by type (`GPUUsage.swift`; unknown types count as $1/h).
+- **Prices** are ballpark on-demand $/GPU-hour by type (`GPUUsage.swift`, neocloud list prices as of Oct 2026; unknown types count as $1/h).
   To override one:
 
   ```bash
